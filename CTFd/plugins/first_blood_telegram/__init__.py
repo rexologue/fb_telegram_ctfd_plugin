@@ -7,8 +7,9 @@ from typing import Any, Dict, Optional
 from flask import Blueprint, jsonify, render_template, request
 from sqlalchemy import asc
 from sqlalchemy import event
+from sqlalchemy.orm import sessionmaker
 
-from CTFd.models import Challenges, Solves, db
+from CTFd.models import Challenges, Config, Solves, db
 from CTFd.plugins import bypass_csrf_protection
 from CTFd.utils import get_config, set_config
 from CTFd.utils.decorators import admins_only
@@ -23,12 +24,21 @@ CFG_CHAT_ID = "FB_TG_CHAT_ID"          # telegram chat id
 CFG_TEMPLATE = "FB_TG_TEMPLATE"        # message template
 CFG_PARSE_MODE = "FB_TG_PARSE_MODE"    # "", "HTML", "MarkdownV2"
 
+SessionLocal = sessionmaker(bind=db.engine)
+
 
 def _cfg(key: str, default: str = "") -> str:
     value = get_config(key)
     if value is None:
         return default
     return str(value)
+
+
+def _cfg_db(session, key: str, default: str = "") -> str:
+    row = session.query(Config).filter_by(key=key).first()
+    if not row or row.value is None:
+        return default
+    return str(row.value)
 
 
 def _is_enabled() -> bool:
@@ -106,34 +116,34 @@ def _render_template_text(template: str, vars_: Dict[str, str]) -> str:
     return rendered
 
 
-def _first_visible_solve_for_challenge(challenge_id: int) -> Optional[Solves]:
+def _first_visible_solve_for_challenge(session, model, challenge_id: int) -> Optional[Solves]:
     """
     First solve per challenge among visible/non-banned accounts.
     """
-    model = get_model()  # Users or Teams depending on mode
     query = (
-        Solves.query.join(model, Solves.account_id == model.id)
+        session.query(Solves)
+        .join(model, Solves.account_id == model.id)
         .filter(Solves.challenge_id == challenge_id, model.hidden == False, model.banned == False)
         .order_by(asc(Solves.date), asc(Solves.id))
     )
     return query.first()
 
 
-def _announce_first_blood_if_needed(solve_id: int) -> None:
-    if not _is_enabled():
+def _announce_first_blood_if_needed(session, solve_id: int) -> None:
+    if _cfg_db(session, CFG_ENABLED, "0") != "1":
         return
 
-    token = _cfg(CFG_TOKEN, "").strip()
-    chat_id = _cfg(CFG_CHAT_ID, "").strip()
+    token = _cfg_db(session, CFG_TOKEN, "").strip()
+    chat_id = _cfg_db(session, CFG_CHAT_ID, "").strip()
     if not token or not chat_id:
         return
 
-    solve = Solves.query.get(solve_id)
+    solve = session.get(Solves, solve_id)
     if not solve:
         return
 
     model = get_model()
-    account = model.query.get(solve.account_id)
+    account = session.get(model, solve.account_id)
     if not account or getattr(account, "hidden", False) or getattr(account, "banned", False):
         return
 
@@ -141,11 +151,11 @@ def _announce_first_blood_if_needed(solve_id: int) -> None:
     if not challenge_id:
         return
 
-    first = _first_visible_solve_for_challenge(int(challenge_id))
+    first = _first_visible_solve_for_challenge(session, model, int(challenge_id))
     if not first or int(first.id) != int(solve.id):
         return
 
-    challenge = Challenges.query.get(int(challenge_id))
+    challenge = session.get(Challenges, int(challenge_id))
     challenge_name = str(getattr(challenge, "name", "") or f"challenge:{challenge_id}")
     challenge_category = str(getattr(challenge, "category", "") or "")
     challenge_points = str(getattr(challenge, "value", "") or "")
@@ -164,8 +174,8 @@ def _announce_first_blood_if_needed(solve_id: int) -> None:
         "date_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
-    template = _cfg(CFG_TEMPLATE, "🩸 FIRST BLOOD! {solver} solved {challenge}")
-    parse_mode = _cfg(CFG_PARSE_MODE, "").strip()
+    template = _cfg_db(session, CFG_TEMPLATE, "🩸 FIRST BLOOD! {solver} solved {challenge}")
+    parse_mode = _cfg_db(session, CFG_PARSE_MODE, "").strip()
     message = _render_template_text(template, vars_)
 
     _telegram_send_message(token=token, chat_id=chat_id, text=message, parse_mode=parse_mode)
@@ -315,5 +325,9 @@ def load(app):
         if not solve_ids:
             return
         with app.app_context():
-            for solve_id in solve_ids:
-                _announce_first_blood_if_needed(solve_id)
+            new_session = SessionLocal()
+            try:
+                for solve_id in solve_ids:
+                    _announce_first_blood_if_needed(new_session, solve_id)
+            finally:
+                new_session.close()
