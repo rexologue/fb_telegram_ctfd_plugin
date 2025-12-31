@@ -1,207 +1,161 @@
-# First Blood → Telegram (CTFd 3.8.0)
+# First Blood Telegram (CTFd plugin)
 
-This repository contains a minimal **CTFd 3.8.0** plugin that announces **First Blood** solves to a Telegram chat.
+Плагин отправляет сообщение в Telegram, когда происходит **первое видимое решение** (FIRST BLOOD) для каждого задания.
 
-Key goals:
-
-- **Drop-in plugin**: copy a folder into `CTFd/plugins/`.
-- **No HTML or templates**: configuration is done entirely via an admin JSON API.
-- **CTFd config storage**: uses `get_config/set_config` to persist settings.
-- **Accurate First Blood semantics**: first visible, non-banned solve per challenge.
-- **Telegram delivery**: sends a message via `sendMessage` using only stdlib (no extra deps).
+- **Видимое** = аккаунт не `hidden` и не `banned`.
+- Если «самое первое» решение было от скрытого/забаненного — плагин объявит первого *видимого* солвера.
 
 ---
 
-## 1. Plugin Layout
+## 1) Как поднять
 
-Copy the plugin directory into your CTFd instance:
+### Требования
+- CTFd (проверено на ветке 3.8.x)
+- Доступ к файловой системе, где лежит ваш CTFd (или к Docker-томам/репозиторию)
 
-```
-CTFd/plugins/first_blood_telegram/
-├── __init__.py
-└── config.json
-```
+### Установка (файлы)
+1) Скопируй папку плагина в директорию плагинов CTFd:
 
-`config.json` tells CTFd to expose the admin route in the Plugins UI:
+- итоговый путь должен быть таким:
+  - `CTFd/plugins/first_blood_telegram/__init__.py`
 
-```json
-{
-  "name": "First Blood Telegram",
-  "route": "/admin/first_blood_telegram"
-}
-```
+2) Перезапусти CTFd (любым способом, который у тебя используется).
 
----
+Примеры (если у тебя Docker Compose — команды могут отличаться по имени сервиса):
+- `docker compose restart ctfd`
+- `docker compose up -d --build`
 
-## 2. Install
+### Проверка, что плагин реально поднялся
+1) Зайди в CTFd под админом.
+2) Открой страницу настроек плагина (это и есть UI):
+- `https://<CTFD_HOST>/admin/first_blood_telegram/`
 
-1. Copy the plugin into `CTFd/plugins/`:
+Если видишь страницу с настройками и кнопками **Save / Send test** — плагин поднят.
 
-   ```bash
-   cp -R first_blood_telegram /path/to/CTFd/plugins/
-   ```
-
-2. Restart CTFd.
-3. Log in as an admin and open the plugin settings:
-
-   - `GET https://<ctfd>/admin/first_blood_telegram/`
-
-You will see a JSON response with the current settings and placeholders.
+### Если не поднялось (быстрый чек-лист)
+- Проверь, что папка называется **ровно** `first_blood_telegram` и лежит **внутри** `CTFd/plugins/`.
+- Проверь, что сервер CTFd реально перезапущен (а не только фронт/прокси).
+- Если у тебя контейнеры: убедись, что папка плагина попала внутрь контейнера (volume / bind mount / образ пересобран).
 
 ---
 
-## 3. Configuration API (JSON only)
+## 2) Как настроить через UI
 
-### 3.1 GET settings
+Настройка делается **только через админ-страницу плагина**:
+- `https://<CTFD_HOST>/admin/first_blood_telegram/`
 
-`GET /admin/first_blood_telegram/`
+### Шаг A. Подготовить Telegram (бот + куда слать)
+Тебе нужно:
+- `BOT_TOKEN` — токен бота
+- `CHAT_ID` (или `@channelusername`) — куда отправлять сообщения
 
-Returns:
+#### A1) Получить BOT_TOKEN
+1) В Telegram открой `@BotFather`
+2) Создай бота: `/newbot`
+3) Скопируй токен вида: `123456789:AA...`
 
-- `settings.enabled`: whether the plugin is enabled.
-- `settings.token_masked`: masked bot token (never returns full token).
-- `settings.token_is_set`: boolean, whether token is present.
-- `settings.chat_id`: target Telegram chat.
-- `settings.template`: message template.
-- `settings.parse_mode`: `""`, `"HTML"`, or `"MarkdownV2"`.
-- `placeholders`: list of supported template variables.
-- `how_to_update`: example of a POST body.
+#### A2) Выбрать куда слать (группа / канал / личка)
+- **Личка:** просто напиши боту любое сообщение (Start).
+- **Группа:** добавь бота в группу, дай право писать сообщения (обычно достаточно быть участником; иногда нужны права).
+- **Канал:** добавь бота админом канала (иначе он не сможет постить).
 
-### 3.2 POST settings
+#### A3) Узнать CHAT_ID (самый практичный способ)
+**Вариант 1 (быстро, через “сырого” бота):**
+1) Добавь в нужный чат/группу бота `@RawDataBot` (или аналогичного бота, который показывает обновления/ID)
+2) Напиши в чат любое сообщение
+3) Он покажет объект, где будет `chat` → `id` — это и есть `CHAT_ID`
 
-`POST /admin/first_blood_telegram/`
+**Вариант 2 (через Telegram API getUpdates):**
+1) Напиши сообщение своему боту (в личку или в группу)
+2) Открой в браузере:
+   - `https://api.telegram.org/bot<BOT_TOKEN>/getUpdates`
+3) В ответе найди `message` → `chat` → `id`
 
-**Body (JSON)** — only fields present will be updated:
+> Для групп/каналов `CHAT_ID` часто **отрицательный** (например `-1001234567890`).
 
-```json
-{
-  "enabled": true,
-  "token": "123456:ABCDEF...",
-  "chat_id": "-1001234567890",
-  "template": "🏁 FB! {solver} первым закрыл «{challenge}».",
-  "parse_mode": ""
-}
-```
-
-### 3.3 POST test message
-
-`POST /admin/first_blood_telegram/test`
-
-Sends a test message to the configured `chat_id` using the current `token`.
-
----
-
-## 4. Telegram Setup
-
-1. Create a bot with `@BotFather` and copy the token.
-2. Add the bot to your target chat or channel.
-3. Get the `chat_id`:
-   - For channels/groups, you can use `@userinfobot` or inspect the `getUpdates` output.
-   - For supergroups, IDs often look like `-1001234567890`.
+**Важно про privacy mode (если getUpdates “пустой” в группах):**
+- У некоторых ботов privacy mode мешает видеть сообщения в группе.
+- В `@BotFather` можно отключить privacy: `/setprivacy` → выбрать бота → `Disable`.
+- Или просто используй вариант с `@RawDataBot`.
 
 ---
 
-## 5. Template Placeholders
+### Шаг B. Заполнить настройки в UI CTFd
+Открой:
+- `https://<CTFD_HOST>/admin/first_blood_telegram/`
 
-You can customize the message with placeholders:
+Заполни:
 
-- `{solver}`: account name (user or team)
-- `{solver_type}`: `user` or `team`
-- `{challenge}`: challenge name
-- `{category}`: challenge category
-- `{points}`: challenge point value
-- `{solve_id}`: solve row id
-- `{challenge_id}`: challenge id
-- `{date_utc}`: current UTC timestamp (`YYYY-MM-DD HH:MM:SS`)
+1) **Enabled**
+- Включает/выключает отправку сообщений.
+- Рекомендация: сначала настроить всё, сделать тестовое сообщение, и только потом включать на бою.
 
-Example template:
+2) **Bot token**
+- Вставь `BOT_TOKEN`
 
-```
-🩸 FIRST BLOOD! {solver} solved {challenge} ({points} pts)
-```
+3) **Chat ID**
+- Вставь `CHAT_ID`
+- (Если используешь публичный канал, иногда можно указывать `@channelusername`, но самый надежный вариант — numeric `CHAT_ID`.)
 
-**Note:** This is a simple string-replace renderer. It does not escape Markdown/HTML. If you use `parse_mode`, make sure your template is valid for that mode.
+4) **Parse mode**
+- `""` (пусто) — без форматирования
+- `HTML` — Telegram HTML-разметка
+- `MarkdownV2` — осторожно: там нужно экранировать спецсимволы
 
----
+5) **Template**
+Шаблон сообщения. Поддерживаемые плейсхолдеры:
 
-## 6. First Blood Semantics
+- `{solver}` — имя солвера (юзер/тим)
+- `{solver_type}` — `user` или `team`
+- `{challenge}` — название задания
+- `{category}` — категория
+- `{points}` — стоимость
+- `{solve_id}` — id solve
+- `{challenge_id}` — id задания
+- `{date_utc}` — время (UTC) на момент отправки
 
-The plugin considers a solve a First Blood if **it is the earliest solve for the challenge** among **non-hidden** and **non-banned** accounts. This matches CTFd’s First Blood logic used in webhooks.
+Пример (без parse_mode):
+- `🩸 FIRST BLOOD! {solver} solved {challenge} (+{points})`
 
-Implementation details:
+Пример (HTML):
+- `🩸 <b>FIRST BLOOD!</b> <code>{solver}</code> solved <b>{challenge}</b> (+{points})`
 
-- The plugin collects new `Solves` during `after_flush`.
-- It announces only after a successful `after_commit`.
-- It queries for the earliest solve (by solve date, then id) where the account is visible and not banned.
-
----
-
-## 7. Example Usage (curl)
-
-```bash
-curl -sS -X POST \
-  -H "Content-Type: application/json" \
-  -b cookies.txt -c cookies.txt \
-  https://<ctfd>/admin/first_blood_telegram/ \
-  -d '{"enabled":true,"token":"123456:ABCDEF","chat_id":"-1001234567890","template":"🏁 FB! {solver} первым закрыл «{challenge}».","parse_mode":""}'
-```
-
-Test message:
-
-```bash
-curl -sS -X POST \
-  -b cookies.txt -c cookies.txt \
-  https://<ctfd>/admin/first_blood_telegram/test
-```
+Нажми **Save**.
 
 ---
 
-## 8. Configuration Keys (CTFd config)
+### Шаг C. Проверка через UI (test message)
+На той же странице нажми **Send test**.
 
-The plugin stores settings with these keys:
-
-- `FB_TG_ENABLED` (`"1"` or `"0"`)
-- `FB_TG_TOKEN`
-- `FB_TG_CHAT_ID`
-- `FB_TG_TEMPLATE`
-- `FB_TG_PARSE_MODE`
+Ожидаемый результат:
+- В Telegram-чат приходит тестовое сообщение.
+- Если не пришло — см. «Типовые проблемы» ниже.
 
 ---
 
-## 9. Troubleshooting
-
-- **No messages sent:**
-  - Ensure `enabled` is `true`.
-  - Verify `token` and `chat_id`.
-  - Check Telegram bot permissions in the target chat.
-- **Message formatting issues:**
-  - If using `parse_mode`, your template must match the syntax (e.g., `MarkdownV2`).
-  - Try `parse_mode: ""` to disable formatting.
-- **No First Blood detected:**
-  - Only visible, non-banned accounts count.
-  - If a hidden or banned account solved first, the plugin will wait until a valid account becomes the earliest visible solve.
+### Шаг D. Проверка в бою (реальный FIRST BLOOD)
+1) Создай тестовый аккаунт/команду (или используй не-админ аккаунт).
+2) Реши любую задачу впервые (или создай новую задачу для теста).
+3) Убедись, что сообщение улетело в Telegram.
 
 ---
 
-## 10. Files in This Repo
+### Типовые проблемы (и что делать)
+**1) Тестовое сообщение не приходит**
+- Проверь, что `Enabled = true`
+- Проверь `BOT_TOKEN` (без пробелов)
+- Проверь `CHAT_ID` (особенно знак `-` и префикс `-100...`)
+- Убедись, что бот имеет право писать:
+  - в группе: бот добавлен и не замьючен
+  - в канале: бот добавлен админом
 
-```
-CTFd/plugins/first_blood_telegram/config.json
-CTFd/plugins/first_blood_telegram/__init__.py
-README.md
-```
+**2) В канале не постит**
+- Почти всегда причина: бот не админ канала или нет права “Post messages”.
 
----
+**3) MarkdownV2 “ломает” сообщение**
+- Это нормально, если в полях есть `_ * [ ] ( ) ~ ` > # + - = | { } . !`
+- Либо экранируй, либо переключись на `HTML`/пустой режим.
 
-## 11. Compatibility
-
-- **Tested for:** CTFd 3.8.0
-- **Dependencies:** None beyond CTFd + Python stdlib
-
----
-
-## 12. Security Notes
-
-- The token is never returned in full via the settings API.
-- Admin-only endpoints (protected with `@admins_only`).
-- CSRF is bypassed for JSON endpoints via `@bypass_csrf_protection`.
+**4) FIRST BLOOD не отправляется, хотя солв есть**
+- Плагин объявляет **первое видимое** решение.
+- Если первым решил hidden/banned — объявление уйдёт на первого видимого (может казаться “не первым”).
