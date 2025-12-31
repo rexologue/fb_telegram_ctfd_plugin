@@ -9,7 +9,7 @@ from sqlalchemy import asc
 from sqlalchemy import event
 from sqlalchemy.orm import sessionmaker
 
-from CTFd.models import Challenges, Config, Solves, db
+from CTFd.models import Challenges, Solves, db
 from CTFd.plugins import bypass_csrf_protection
 from CTFd.utils import get_config, set_config
 from CTFd.utils.decorators import admins_only
@@ -32,13 +32,6 @@ def _cfg(key: str, default: str = "") -> str:
     if value is None:
         return default
     return str(value)
-
-
-def _cfg_db(session, key: str, default: str = "") -> str:
-    row = session.query(Config).filter_by(key=key).first()
-    if not row or row.value is None:
-        return default
-    return str(row.value)
 
 
 def _is_enabled() -> bool:
@@ -130,11 +123,11 @@ def _first_visible_solve_for_challenge(session, model, challenge_id: int) -> Opt
 
 
 def _announce_first_blood_if_needed(session, solve_id: int) -> None:
-    if _cfg_db(session, CFG_ENABLED, "0") != "1":
+    if _cfg(CFG_ENABLED, "0") != "1":
         return
 
-    token = _cfg_db(session, CFG_TOKEN, "").strip()
-    chat_id = _cfg_db(session, CFG_CHAT_ID, "").strip()
+    token = _cfg(CFG_TOKEN, "").strip()
+    chat_id = _cfg(CFG_CHAT_ID, "").strip()
     if not token or not chat_id:
         return
 
@@ -174,8 +167,8 @@ def _announce_first_blood_if_needed(session, solve_id: int) -> None:
         "date_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
-    template = _cfg_db(session, CFG_TEMPLATE, "🩸 FIRST BLOOD! {solver} solved {challenge}")
-    parse_mode = _cfg_db(session, CFG_PARSE_MODE, "").strip()
+    template = _cfg(CFG_TEMPLATE, "🩸 FIRST BLOOD! {solver} solved {challenge}")
+    parse_mode = _cfg(CFG_PARSE_MODE, "").strip()
     message = _render_template_text(template, vars_)
 
     _telegram_send_message(token=token, chat_id=chat_id, text=message, parse_mode=parse_mode)
